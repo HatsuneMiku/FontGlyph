@@ -1,8 +1,7 @@
 /*
   HelloWorldToRoot.c
 
-  cl kernel32.lib user32.lib gdi32.lib advapi32.lib shell32.lib
-    HelloWorldToRoot.c
+  cl kernel32.lib user32.lib gdi32.lib HelloWorldToRoot.c
     ParseCommandLine.c ConvWCS.c CheckVersion.c DrawTransparent.c
     Glyph.c Base64.c MetaObject.c
 */
