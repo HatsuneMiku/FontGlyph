@@ -219,8 +219,11 @@ int stroke(DrawInfo *di, int xs, int ys, int xe, int ye)
 int drawStrokes(DrawInfo *di, char *str)
 {
   int ox = di->ox, oy = di->oy;
-  HPEN hpen = CreatePen(PS_SOLID, 1, RGB(0, 255, 0));
+  COLORREF foreground_color = RGB(0, 255, 0);
+  HPEN hpen = CreatePen(PS_SOLID, 1, foreground_color);
   HPEN hopen = (HPEN)SelectObject(di->hdc, hpen);
+  HBRUSH hbrush = CreateSolidBrush(foreground_color);
+  HBRUSH hobrush = (HBRUSH)SelectObject(di->hdc, hbrush);
   char *p;
   for(p = str; *p; ++p){
     int w, h;
@@ -228,59 +231,76 @@ int drawStrokes(DrawInfo *di, char *str)
     if(*p == '\n') di->ox = ox, di->oy -= h + di->spy;
     else di->ox += w + di->spx;
   }
-  SelectObject(di->hdc, hopen);
-  DeleteObject(hpen);
+  DeleteObject(SelectObject(di->hdc, hobrush));
+  DeleteObject(SelectObject(di->hdc, hopen));
+  return 0;
+}
+
+int drawCallback(HDC hdc, int szx, int szy, COLORREF transparent_color)
+{
+  DrawInfo di = {hdc, szx, szy, 120, szy - 400, 40, 40, 10};
+  HPEN hpen = CreatePen(PS_SOLID, 1, transparent_color);
+  HPEN hopen = (HPEN)SelectObject(hdc, hpen);
+  HBRUSH hbrush = CreateSolidBrush(transparent_color);
+  HBRUSH hobrush = (HBRUSH)SelectObject(hdc, hbrush);
+  Rectangle(hdc, 0, 0, szx, szy);
+  drawStrokes(&di, "Hello,\nworld!");
+  DeleteObject(SelectObject(hdc, hobrush));
+  DeleteObject(SelectObject(hdc, hopen));
+  return 0;
+}
+
+int drawTransparent(HDC hdc, int x, int y, int w, int h,
+  HDC hmdc, int szx, int szy,
+  COLORREF transparent_color, int (*callback)(HDC, int, int, COLORREF))
+{
+  HDC hndc = CreateCompatibleDC(hmdc);
+  HBITMAP hnbmp = CreateBitmap(szx, szy, 1, 1, NULL);
+  HBITMAP honbmp = (HBITMAP)SelectObject(hndc, hnbmp);
+  HDC hgndc = CreateCompatibleDC(hmdc);
+  HBITMAP hgnbmp = CreateCompatibleBitmap(hmdc, szx, szy);
+  HBITMAP hognbmp = (HBITMAP)SelectObject(hgndc, hgnbmp);
+  HDC hpdc = CreateCompatibleDC(hmdc);
+  HBITMAP hpbmp = CreateBitmap(szx, szy, 1, 1, NULL);
+  HBITMAP hopbmp = (HBITMAP)SelectObject(hpdc, hpbmp);
+  COLORREF hocol = SetBkColor(hmdc, transparent_color);
+  callback(hmdc, szx, szy, transparent_color);
+  BitBlt(hndc, 0, 0, szx, szy, hmdc, 0, 0, SRCCOPY);
+  BitBlt(hgndc, 0, 0, szx, szy, hndc, 0, 0, SRCCOPY);
+  BitBlt(hpdc, 0, 0, szx, szy, hndc, 0, 0, NOTSRCCOPY);
+  SetBkColor(hmdc, hocol);
+  BitBlt(hmdc, 0, 0, szx, szy, hpdc, 0, 0, SRCAND);
+  BitBlt(hdc, x, y, w, h, hgndc, 0, 0, SRCAND);
+  BitBlt(hdc, x, y, w, h, hmdc, 0, 0, SRCPAINT);
+  DeleteObject(SelectObject(hpdc, hopbmp));
+  DeleteDC(hpdc);
+  DeleteObject(SelectObject(hgndc, hognbmp));
+  DeleteDC(hgndc);
+  DeleteObject(SelectObject(hndc, honbmp));
+  DeleteDC(hndc);
   return 0;
 }
 
 int main(int ac, char **av)
 {
-  HWND hwnd = GetDesktopWindow();
-  RECT rc;
-  GetClientRect(hwnd, &rc);
   if(!initGlyph(gflg)) fprintf(stderr, "error 1");
   if(!(glyf_len = initGlyph(glyf))) fprintf(stderr, "error 2");
   {
-    int szx = rc.right - rc.left, szy = rc.bottom - rc.top;
+    HWND hwnd = GetDesktopWindow();
     HDC hdc = GetDC(hwnd);
-    HDC hmdc = CreateCompatibleDC(hdc);
-    HBITMAP hbmp = CreateCompatibleBitmap(hdc, szx, szy);
-    HBITMAP hobmp = (HBITMAP)SelectObject(hmdc, hbmp);
-    DrawInfo di = {hmdc, szx, szy, 120, szy - 200, 40, 40, 10};
-    HDC hndc = CreateCompatibleDC(hmdc);
-    HBITMAP hnbmp = CreateBitmap(szx, szy, 1, 1, NULL);
-    HBITMAP honbmp = (HBITMAP)SelectObject(hndc, hnbmp);
-    HDC hgndc = CreateCompatibleDC(hmdc);
-    HBITMAP hgnbmp = CreateCompatibleBitmap(hmdc, szx, szy);
-    HBITMAP hognbmp = (HBITMAP)SelectObject(hgndc, hgnbmp);
-    HDC hpdc = CreateCompatibleDC(hmdc);
-    HBITMAP hpbmp = CreateBitmap(szx, szy, 1, 1, NULL);
-    HBITMAP hopbmp = (HBITMAP)SelectObject(hpdc, hpbmp);
-    COLORREF transparent_color = RGB(255, 255, 0);
-    HPEN hpen = CreatePen(PS_SOLID, 1, transparent_color);
-    HPEN hopen = (HPEN)SelectObject(hmdc, hpen);
-    HBRUSH hbrush = CreateSolidBrush(transparent_color);
-    HBRUSH hobrush = (HBRUSH)SelectObject(hmdc, hbrush);
-    COLORREF hoc = SetBkColor(hmdc, transparent_color);
-    Rectangle(hmdc, 0, 0, szx, szy);
-    drawStrokes(&di, "Hello,\nworld!");
-    BitBlt(hndc, 0, 0, szx, szy, hmdc, 0, 0, SRCCOPY);
-    BitBlt(hgndc, 0, 0, szx, szy, hndc, 0, 0, SRCCOPY);
-    BitBlt(hpdc, 0, 0, szx, szy, hndc, 0, 0, NOTSRCCOPY);
-    SetBkColor(hmdc, hoc);
-    BitBlt(hmdc, 0, 0, szx, szy, hpdc, 0, 0, SRCAND);
-    BitBlt(hdc, 200, 200, 800, 480, hgndc, 0, 0, SRCAND);
-    BitBlt(hdc, 200, 200, 800, 480, hmdc, 0, 0, SRCPAINT);
-    SelectObject(hmdc, hobrush); DeleteObject(hbrush);
-    SelectObject(hmdc, hopen); DeleteObject(hpen);
-    SelectObject(hpdc, hopbmp); DeleteObject(hpbmp);
-    DeleteDC(hpdc);
-    SelectObject(hgndc, hognbmp); DeleteObject(hgnbmp);
-    DeleteDC(hgndc);
-    SelectObject(hndc, honbmp); DeleteObject(hnbmp);
-    DeleteDC(hndc);
-    SelectObject(hmdc, hobmp); DeleteObject(hbmp);
-    DeleteDC(hmdc);
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    {
+      int szx = rc.right - rc.left, szy = rc.bottom - rc.top;
+      HDC hmdc = CreateCompatibleDC(hdc);
+      HBITMAP hbmp = CreateCompatibleBitmap(hdc, szx, szy);
+      HBITMAP hobmp = (HBITMAP)SelectObject(hmdc, hbmp);
+      BitBlt(hmdc, 0, 0, szx, szy, hdc, 0, 0, SRCCOPY); // for Aero
+      drawTransparent(hdc, 0, 0, szx, szy, hmdc, szx, szy,
+        RGB(255, 255, 0), drawCallback);
+      DeleteObject(SelectObject(hmdc, hobmp));
+      DeleteDC(hmdc);
+    }
     ReleaseDC(hwnd, hdc);
   }
   return 0;
