@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define SHOW_MARK 0
+#define SHOW_MARK 1
 
 char *TITLE = "glyf";
 BYTE *gflg = "AQv/8AIYH8k5JMkBA/ACCxeSSSQBA/ABDP/4ARLJ+SACEyDkknySAAIDB/8=";
@@ -125,13 +125,30 @@ int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
   int numflags = getGlyphData(&cp, &epoc, &numepoc, ch);
   *w = 80, *h = 160;
   if(numflags){
+    BeginPath(di->hdc);
+    SetBkMode(di->hdc, TRANSPARENT);
     for(j = 0; j < numepoc; ++j){
       CurvePoint prv;
       int k = j ? epoc[j - 1] + 1 : 0;
       for(i = k; i <= epoc[j]; ++i){
         CurvePoint cur = cp[i];
         di->state = i - k;
-        if(SHOW_MARK){
+        if(i == k && !(cur.flg & 0x01))
+          MessageBox(NULL, "off curve first", TITLE, MB_ICONEXCLAMATION|IDOK);
+        if(i != k)
+          if(curve(di, &prv, &cur, &cp[i == epoc[j] ? k : i + 1])) continue;
+        prv = cur;
+      }
+      di->state = i - k;
+      curve(di, &prv, &cp[k], &cp[k + 1]);
+    }
+    EndPath(di->hdc);
+    FillPath(di->hdc);
+    if(SHOW_MARK){
+      for(j = 0; j < numepoc; ++j){
+        int k = j ? epoc[j - 1] + 1 : 0;
+        for(i = k; i <= epoc[j]; ++i){
+          CurvePoint cur = cp[i];
           int r = i == k ? 4 : 3;
           COLORREF col = cur.flg & 0x01 ? RGB(0, 0, 255) : RGB(255, 0, 0);
           HPEN hpen = CreatePen(PS_SOLID, 1, col);
@@ -147,14 +164,7 @@ int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
           SelectObject(di->hdc, hopen);
           DeleteObject(hpen);
         }
-        if(i == k && !(cur.flg & 0x01))
-          MessageBox(NULL, "off curve first", TITLE, MB_ICONEXCLAMATION|IDOK);
-        if(i != k)
-          if(curve(di, &prv, &cur, &cp[i == epoc[j] ? k : i + 1])) continue;
-        prv = cur;
       }
-      di->state = i - k;
-      curve(di, &prv, &cp[k], &cp[k + 1]);
     }
   }
   if(cp) free(cp);
@@ -164,7 +174,7 @@ int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
 
 int bezier(DrawInfo *di, int px, int py, int x, int y, int nx, int ny)
 {
-#if 1
+#if 0
   int t, m = ((nx - px) * (nx - px) + (ny - py) * (ny - py)) / 5000;
   if(di->state == 1)
     MoveToEx(di->hdc, scalex(di, px), scaley(di, py), NULL);
@@ -187,7 +197,9 @@ int bezier(DrawInfo *di, int px, int py, int x, int y, int nx, int ny)
     lppt[i].x = scalex(di, lppt[i].x);
     lppt[i].y = scaley(di, lppt[i].y);
   }
-  PolyBezierTo(di->hdc, lppt, sizeof(lppt) / sizeof(lppt[0]));
+  if(di->state == 1)
+    MoveToEx(di->hdc, scalex(di, px), scaley(di, py), NULL);
+  PolyBezierTo(di->hdc, lppt + 1, (sizeof(lppt) - 1) / sizeof(lppt[0]));
 #endif
   return 0;
 }
@@ -232,11 +244,7 @@ int drawStrokes(DrawInfo *di, COLORREF foreground_color, char *str)
   char *p;
   for(p = str; *p; ++p){
     int w, h;
-    BeginPath(di->hdc);
-    SetBkMode(di->hdc, TRANSPARENT);
     drawGlyph(di, &w, &h, *p);
-    EndPath(di->hdc);
-    FillPath(di->hdc);
     if(*p == '\n') di->ox = ox, di->oy -= h + di->spy;
     else di->ox += w + di->spx;
   }
@@ -247,7 +255,7 @@ int drawStrokes(DrawInfo *di, COLORREF foreground_color, char *str)
 
 int drawCallback(HDC hdc, int szx, int szy, COLORREF transparent_color)
 {
-  DrawInfo di = {hdc, szx, szy, 120, szy - 400, 40, 40, 10};
+  DrawInfo di = {hdc, szx, szy, 120, szy - 400, 40, 40, 10, 0};
   HPEN hpen = CreatePen(PS_SOLID, 1, transparent_color);
   HPEN hopen = (HPEN)SelectObject(hdc, hpen);
   HBRUSH hbrush = CreateSolidBrush(transparent_color);
