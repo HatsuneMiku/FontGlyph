@@ -26,6 +26,26 @@ BYTE *glyf = "AAwASAU7AAD/OgAAAAAC2f0ZAAAAAP0n/zoAAAAABdEAxgAAAAD9uALnAAAAAAJI"
              "AAAA0wDMAAA=";
 int glyf_len = 0;
 
+typedef struct _CurvePoint {
+  BYTE flg;
+  int x, y;
+} CurvePoint;
+
+typedef struct _DrawInfo {
+  HDC hdc;
+  int szx, szy, ox, oy, spx, spy, scale;
+} DrawInfo;
+
+int scalex(DrawInfo *di, int x)
+{
+  return di->ox + x / di->scale;
+}
+
+int scaley(DrawInfo *di, int y)
+{
+  return di->szy - (di->oy + y / di->scale);
+}
+
 int b64decode(BYTE *dst, size_t *dst_size, BYTE *src, int src_size)
 {
   static BYTE b64o[80] = {
@@ -67,162 +87,201 @@ short b2h(BYTE *b)
   return (short)((b[0] << 8) | b[1]);
 }
 
-int getGlyphData(BYTE **epoc, BYTE **flags, int **xcoords, int **ycoords,
-  int *numepoc, char ch)
+int getGlyphData(CurvePoint **cp, BYTE **epoc, int *numepoc, char ch)
 {
   int i, j, k, pos = 0, num = 0, code = 0, fpos = 0, epnum = 0, fnum = 0;
-  *epoc = *flags = NULL, *xcoords = *ycoords = NULL, *numepoc = 0;
+  *cp = NULL, *epoc = NULL, *numepoc = 0;
   while(pos < glyf_len){
     num = b2h(&glyf[pos]), code = b2h(&glyf[pos + 2]);
     epnum = gflg[fpos], fnum = (num + 7) / 8;
     if(code == ch){
+      if(!(*cp = (CurvePoint *)malloc(num * sizeof(CurvePoint)))) break;
       if(!(*epoc = (BYTE *)malloc(*numepoc = epnum))) break;
       for(i = 0; i < epnum; ++i) (*epoc)[i] = gflg[fpos + 1 + i];
-      if(!(*flags = (BYTE *)malloc(num))) break;
       for(i = 0, k = 0; i < fnum; ++i){
         BYTE b = gflg[fpos + 1 + epnum + i];
         BYTE m = 0x80;
         for(j = 0; j < 8 - (i == fnum - 1 ? fnum * 8 - num : 0); ++j, m >>= 1)
-          (*flags)[k++] = b & m ? 1 : 0;
+          (*cp)[k++].flg = b & m ? 1 : 0;
       }
-      break;
+      for(i = 0; i < num; ++i){
+        (*cp)[i].x = (i ? (*cp)[i-1].x : 0) + b2h(&glyf[pos + (i+1)*4]);
+        (*cp)[i].y = (i ? (*cp)[i-1].y : 0) + b2h(&glyf[pos + (i+1)*4 + 2]);
+      }
+      return num;
     }
     pos += (num + 1) * 4;
     fpos += epnum + fnum + 1;
   }
-  if(!*epoc || !*flags) return 0;
-  if(!(*xcoords = (int *)malloc(num * sizeof(int)))) return 0;
-  if(!(*ycoords = (int *)malloc(num * sizeof(int)))) return 0;
-  for(i = 0; i < num; ++i){
-    (*xcoords)[i] = (i ? (*xcoords)[i-1] : 0) + b2h(&glyf[pos + (i+1)*4]);
-    (*ycoords)[i] = (i ? (*ycoords)[i-1] : 0) + b2h(&glyf[pos + (i+1)*4 + 2]);
-  }
-  return num;
-}
-
-int drawGlyph(HDC hdc, int scale, int szx, int szy, int ox, int oy,
-  int *w, int *h, int ch)
-{
-  BYTE *epoc, *flags;
-  int *xcoords, *ycoords, numepoc, i, j;
-  int numflags = getGlyphData(&epoc, &flags, &xcoords, &ycoords, &numepoc, ch);
-  *w = 80, *h = 160;
-  if(numflags){
-    for(j = 0; j < numepoc; ++j){
-      int pflg, px, py, k = j ? epoc[j - 1] + 1 : 0;
-      for(i = k; i <= epoc[j]; ++i){
-        int flg = flags[i], x = xcoords[i], y = ycoords[i];
-        if(SHOW_MARK){
-          int r = i == k ? 4 : 3;
-          COLORREF col = flg & 0x01 ? RGB(0, 0, 255) : RGB(255, 0, 0);
-          HPEN hpen = CreatePen(PS_SOLID, 1, col);
-          HPEN hopen = (HPEN)SelectObject(hdc, hpen);
-          HBRUSH hbrush, hobrush;
-          if(i == k) hbrush = CreateSolidBrush(RGB(0, 255, 0));
-          else hbrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
-          hobrush = (HBRUSH)SelectObject(hdc, hbrush);
-          Ellipse(hdc, ox - r + x / scale, szy - (oy - r + y / scale),
-            ox + r + x / scale, szy - (oy + r + y / scale));
-          SelectObject(hdc, hobrush);
-          if(i == k) DeleteObject(hbrush);
-          SelectObject(hdc, hopen);
-          DeleteObject(hpen);
-        }
-        if(i == k && !(flg & 0x01))
-          MessageBox(NULL, "off curve first", TITLE, MB_ICONEXCLAMATION|IDOK);
-        if(i != k){
-          int n = i == epoc[j] ? k : i + 1;
-          int nflg = flags[n], nx = xcoords[n], ny = ycoords[n];
-          if(curve(hdc, scale, szx, szy, ox, oy,
-            &pflg, &px, &py, flg, x, y, nflg, nx, ny)) continue;
-        }
-        pflg = flg, px = x, py = y;
-      }
-      curve(hdc, scale, szx, szy, ox, oy, &pflg, &px, &py,
-        flags[k], xcoords[k], ycoords[k],
-        flags[k + 1], xcoords[k + 1], ycoords[k + 1]);
-    }
-  }
-  if(epoc) free(epoc);
-  if(flags) free(flags);
-  if(xcoords) free(xcoords);
-  if(ycoords) free(ycoords);
   return 0;
 }
 
-int bezier(HDC hdc, int scale, int szx, int szy, int ox, int oy,
-  int px, int py, int x, int y, int nx, int ny)
+int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
 {
+  CurvePoint *cp;
+  BYTE *epoc;
+  int numepoc, i, j;
+  int numflags = getGlyphData(&cp, &epoc, &numepoc, ch);
+  *w = 80, *h = 160;
+  if(numflags){
+    for(j = 0; j < numepoc; ++j){
+      CurvePoint prv;
+      int k = j ? epoc[j - 1] + 1 : 0;
+      for(i = k; i <= epoc[j]; ++i){
+        CurvePoint cur = cp[i];
+        if(SHOW_MARK){
+          int r = i == k ? 4 : 3;
+          COLORREF col = cur.flg & 0x01 ? RGB(0, 0, 255) : RGB(255, 0, 0);
+          HPEN hpen = CreatePen(PS_SOLID, 1, col);
+          HPEN hopen = (HPEN)SelectObject(di->hdc, hpen);
+          HBRUSH hbrush, hobrush;
+          if(i == k) hbrush = CreateSolidBrush(RGB(0, 255, 0));
+          else hbrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
+          hobrush = (HBRUSH)SelectObject(di->hdc, hbrush);
+          Ellipse(di->hdc, scalex(di, cur.x) - r, scaley(di, cur.y) + r,
+            scalex(di, cur.x) + r, scaley(di, cur.y) - r);
+          SelectObject(di->hdc, hobrush);
+          if(i == k) DeleteObject(hbrush);
+          SelectObject(di->hdc, hopen);
+          DeleteObject(hpen);
+        }
+        if(i == k && !(cur.flg & 0x01))
+          MessageBox(NULL, "off curve first", TITLE, MB_ICONEXCLAMATION|IDOK);
+        if(i != k)
+          if(curve(di, &prv, &cur, &cp[i == epoc[j] ? k : i + 1])) continue;
+        prv = cur;
+      }
+      curve(di, &prv, &cp[k], &cp[k + 1]);
+    }
+  }
+  if(cp) free(cp);
+  if(epoc) free(epoc);
+  return 0;
+}
+
+int bezier(DrawInfo *di, int px, int py, int x, int y, int nx, int ny)
+{
+#if 0
   int t, m = ((nx - px) * (nx - px) + (ny - py) * (ny - py)) / 5000;
-  MoveToEx(hdc, ox + px / scale, szy - (oy + py / scale), NULL);
+  MoveToEx(di->hdc, scalex(di, px), scaley(di, py), NULL);
   for(t = 1; t < m; ++t){
     float f = t / (float)m;
     float a[] = {(1 - f) * (1 - f), 2 * f * (1 - f), f * f};
     int tx = a[0] * px + a[1] * x + a[2] * nx;
     int ty = a[0] * py + a[1] * y + a[2] * ny;
-    LineTo(hdc, ox + tx / scale, szy - (oy + ty / scale));
+    LineTo(di->hdc, scalex(di, tx), scaley(di, ty));
   }
-  LineTo(hdc, ox + nx / scale, szy - (oy + ny / scale));
+  LineTo(di->hdc, scalex(di, nx), scaley(di, ny));
+#else
+  int i;
+  POINT lppt[4];
+  lppt[0].x = px, lppt[0].y = py;
+  lppt[1].x = px + (x - px) * 2 / 3, lppt[1].y = py + (y - py) * 2 / 3;
+  lppt[2].x = lppt[1].x + (nx - px) / 3, lppt[2].y = lppt[1].y + (ny - py) / 3;
+  lppt[3].x = nx, lppt[3].y = ny;
+  for(i = 0; i < sizeof(lppt) / sizeof(lppt[0]); ++i){
+    lppt[i].x = scalex(di, lppt[i].x);
+    lppt[i].y = scaley(di, lppt[i].y);
+  }
+  PolyBezier(di->hdc, lppt, sizeof(lppt) / sizeof(lppt[0]));
+#endif
   return 0;
 }
 
-int curve(HDC hdc, int scale, int szx, int szy, int ox, int oy,
-  int *pflg, int *px, int *py, int flg, int x, int y, int nflg, int nx, int ny)
+int curve(DrawInfo *di, CurvePoint *prv, CurvePoint *cur, CurvePoint *nxt)
 {
-  if(flg & 0x01){
-    if(!(*pflg & 0x01))
+  if(cur->flg & 0x01){
+    if(!(prv->flg & 0x01))
       MessageBox(NULL, "off curve bug", TITLE, MB_ICONEXCLAMATION|IDOK);
-    stroke(hdc, scale, szx, szy, ox, oy, *px, *py, x, y);
+    stroke(di, prv->x, prv->y, cur->x, cur->y);
     return 0;
   }
-  if(nflg & 0x01){
-    bezier(hdc, scale, szx, szy, ox, oy, *px, *py, x, y, nx, ny);
-    *pflg = nflg, *px = nx, *py = ny;
+  if(nxt->flg & 0x01){
+    bezier(di, prv->x, prv->y, cur->x, cur->y, nxt->x, nxt->y);
+    *prv = *nxt;
     return !0;
   }else{
-    int mx = (x + nx) / 2, my = (y + ny) / 2;
-    bezier(hdc, scale, szx, szy, ox, oy, *px, *py, x, y, mx, my);
-    *pflg = 1, *px = mx, *py = my;
+    int mx = (cur->x + nxt->x) / 2, my = (cur->y + nxt->y) / 2;
+    bezier(di, prv->x, prv->y, cur->x, cur->y, mx, my);
+    prv->flg = 1, prv->x = mx, prv->y = my;
     return !0;
   }
 }
 
-int stroke(HDC hdc, int scale, int szx, int szy, int ox, int oy,
-  int xs, int ys, int xe, int ye)
+int stroke(DrawInfo *di, int xs, int ys, int xe, int ye)
 {
   POINT p;
-  MoveToEx(hdc, ox + xs / scale, szy - (oy + ys / scale), &p);
-  LineTo(hdc, ox + xe / scale, szy - (oy + ye / scale));
+  MoveToEx(di->hdc, scalex(di, xs), scaley(di, ys), &p);
+  LineTo(di->hdc, scalex(di, xe), scaley(di, ye));
   return 0;
 }
 
-int drawStrokes(int scale, int ofx, int ofy, int spx, int spy, char *str)
+int drawStrokes(DrawInfo *di, char *str)
 {
-  int szx, szy, ox = ofx, oy = ofy;
-  char *p;
-  HWND hwnd = GetDesktopWindow();
-  HDC hdc = GetDC(hwnd);
+  int ox = di->ox, oy = di->oy;
   HPEN hpen = CreatePen(PS_SOLID, 1, RGB(0, 255, 0));
-  HPEN hopen = (HPEN)SelectObject(hdc, hpen);
-  RECT rc;
-  GetClientRect(hwnd, &rc);
-  szx = rc.right - rc.left, szy = rc.bottom - rc.top;
+  HPEN hopen = (HPEN)SelectObject(di->hdc, hpen);
+  char *p;
   for(p = str; *p; ++p){
     int w, h;
-    drawGlyph(hdc, scale, szx, szy, ox, oy, &w, &h, *p);
-    if(*p == '\n') ox = ofx, oy -= h + spy;
-    else ox += w + spx;
+    drawGlyph(di, &w, &h, *p);
+    if(*p == '\n') di->ox = ox, di->oy -= h + di->spy;
+    else di->ox += w + di->spx;
   }
-  SelectObject(hdc, hopen);
+  SelectObject(di->hdc, hopen);
   DeleteObject(hpen);
-  ReleaseDC(hwnd, hdc);
   return 0;
 }
 
 int main(int ac, char **av)
 {
+  HWND hwnd = GetDesktopWindow();
+  RECT rc;
+  GetClientRect(hwnd, &rc);
   if(!initGlyph(gflg)) fprintf(stderr, "error 1");
   if(!(glyf_len = initGlyph(glyf))) fprintf(stderr, "error 2");
-  drawStrokes(10, 120, 480, 40, 40, "Hello,\nworld!");
+  {
+    int szx = rc.right - rc.left, szy = rc.bottom - rc.top;
+    HDC hdc = GetDC(hwnd);
+    HDC hmdc = CreateCompatibleDC(hdc);
+    HBITMAP hbmp = CreateCompatibleBitmap(hdc, szx, szy);
+    HBITMAP hobmp = (HBITMAP)SelectObject(hmdc, hbmp);
+    DrawInfo di = {hmdc, szx, szy, 120, szy - 200, 40, 40, 10};
+    HDC hndc = CreateCompatibleDC(hmdc);
+    HBITMAP hnbmp = CreateBitmap(szx, szy, 1, 1, NULL);
+    HBITMAP honbmp = (HBITMAP)SelectObject(hndc, hnbmp);
+    HDC hgndc = CreateCompatibleDC(hmdc);
+    HBITMAP hgnbmp = CreateCompatibleBitmap(hmdc, szx, szy);
+    HBITMAP hognbmp = (HBITMAP)SelectObject(hgndc, hgnbmp);
+    HDC hpdc = CreateCompatibleDC(hmdc);
+    HBITMAP hpbmp = CreateBitmap(szx, szy, 1, 1, NULL);
+    HBITMAP hopbmp = (HBITMAP)SelectObject(hpdc, hpbmp);
+    COLORREF transparent_color = RGB(255, 255, 0);
+    HPEN hpen = CreatePen(PS_SOLID, 1, transparent_color);
+    HPEN hopen = (HPEN)SelectObject(hmdc, hpen);
+    HBRUSH hbrush = CreateSolidBrush(transparent_color);
+    HBRUSH hobrush = (HBRUSH)SelectObject(hmdc, hbrush);
+    COLORREF hoc = SetBkColor(hmdc, transparent_color);
+    Rectangle(hmdc, 0, 0, szx, szy);
+    drawStrokes(&di, "Hello,\nworld!");
+    BitBlt(hndc, 0, 0, szx, szy, hmdc, 0, 0, SRCCOPY);
+    BitBlt(hgndc, 0, 0, szx, szy, hndc, 0, 0, SRCCOPY);
+    BitBlt(hpdc, 0, 0, szx, szy, hndc, 0, 0, NOTSRCCOPY);
+    SetBkColor(hmdc, hoc);
+    BitBlt(hmdc, 0, 0, szx, szy, hpdc, 0, 0, SRCAND);
+    BitBlt(hdc, 200, 200, 800, 480, hgndc, 0, 0, SRCAND);
+    BitBlt(hdc, 200, 200, 800, 480, hmdc, 0, 0, SRCPAINT);
+    SelectObject(hmdc, hobrush); DeleteObject(hbrush);
+    SelectObject(hmdc, hopen); DeleteObject(hpen);
+    SelectObject(hpdc, hopbmp); DeleteObject(hpbmp);
+    DeleteDC(hpdc);
+    SelectObject(hgndc, hognbmp); DeleteObject(hgnbmp);
+    DeleteDC(hgndc);
+    SelectObject(hndc, honbmp); DeleteObject(hnbmp);
+    DeleteDC(hndc);
+    SelectObject(hmdc, hobmp); DeleteObject(hbmp);
+    DeleteDC(hmdc);
+    ReleaseDC(hwnd, hdc);
+  }
   return 0;
 }
