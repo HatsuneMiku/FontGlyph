@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define SHOW_MARK 1
+
+char *TITLE = "glyf";
 BYTE *gflg = "AQv/8AIYH8k5JMkBA/ACCxeSSSQBA/ABDP/4ARLJ+SACEyDkknySAAIDB/8=";
 BYTE *glyf = "AAwASAU7AAD/OgAAAAAC2f0ZAAAAAP0n/zoAAAAABdEAxgAAAAD9uALnAAAAAAJI"
              "AMYAAAAgAGUEYAIb/MkAAAAA/5kAPv9nADb/zwA0/9AAj//QAFYAAAByAAAA5wBb"
@@ -59,7 +62,7 @@ int initGlyph(BYTE *str)
   return len;
 }
 
-int b2h(BYTE *b)
+short b2h(BYTE *b)
 {
   return (short)((b[0] << 8) | b[1]);
 }
@@ -73,11 +76,9 @@ int getGlyphData(BYTE **epoc, BYTE **flags, int **xcoords, int **ycoords,
     num = b2h(&glyf[pos]), code = b2h(&glyf[pos + 2]);
     epnum = gflg[fpos], fnum = (num + 7) / 8;
     if(code == ch){
-      *epoc = (BYTE *)malloc(*numepoc = epnum);
-      if(!*epoc) break;
+      if(!(*epoc = (BYTE *)malloc(*numepoc = epnum))) break;
       for(i = 0; i < epnum; ++i) (*epoc)[i] = gflg[fpos + 1 + i];
-      *flags = (BYTE *)malloc(num);
-      if(!*flags) break;
+      if(!(*flags = (BYTE *)malloc(num))) break;
       for(i = 0, k = 0; i < fnum; ++i){
         BYTE b = gflg[fpos + 1 + epnum + i];
         BYTE m = 0x80;
@@ -90,9 +91,8 @@ int getGlyphData(BYTE **epoc, BYTE **flags, int **xcoords, int **ycoords,
     fpos += epnum + fnum + 1;
   }
   if(!*epoc || !*flags) return 0;
-  *xcoords = (int *)malloc(num * sizeof(int));
-  *ycoords = (int *)malloc(num * sizeof(int));
-  if(!*xcoords || !*ycoords) return 0;
+  if(!(*xcoords = (int *)malloc(num * sizeof(int)))) return 0;
+  if(!(*ycoords = (int *)malloc(num * sizeof(int)))) return 0;
   for(i = 0; i < num; ++i){
     (*xcoords)[i] = (i ? (*xcoords)[i-1] : 0) + b2h(&glyf[pos + (i+1)*4]);
     (*ycoords)[i] = (i ? (*ycoords)[i-1] : 0) + b2h(&glyf[pos + (i+1)*4 + 2]);
@@ -107,35 +107,84 @@ int drawGlyph(HDC hdc, int scale, int szx, int szy, int ox, int oy,
   int *xcoords, *ycoords, numepoc, i, j;
   int numflags = getGlyphData(&epoc, &flags, &xcoords, &ycoords, &numepoc, ch);
   *w = 80, *h = 160;
-  if(!numflags) return 0;
-  for(j = 0; j < numepoc; ++j){
-    int px, py, k = j ? epoc[j - 1] + 1 : 0;
-    for(i = k; i <= epoc[j]; ++i){
-      int flg = flags[i], x = xcoords[i], y = ycoords[i];
-      int r = i == k ? 4 : 3;
-      COLORREF col = flg & 0x01 ? RGB(0, 0, 255) : RGB(255, 0, 0);
-      HPEN hpen = CreatePen(PS_SOLID, 1, col);
-      HPEN hopen = (HPEN)SelectObject(hdc, hpen);
-      HBRUSH hbrush, hobrush;
-      if(i == k) hbrush = CreateSolidBrush(RGB(0, 255, 0));
-      else hbrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
-      hobrush = (HBRUSH)SelectObject(hdc, hbrush);
-      Ellipse(hdc, ox - r + x / scale, szy - (oy - r + y / scale),
-        ox + r + x / scale, szy - (oy + r + y / scale));
-      SelectObject(hdc, hobrush);
-      if(i == k) DeleteObject(hbrush);
-      SelectObject(hdc, hopen);
-      DeleteObject(hpen);
-      if(i != k) stroke(hdc, scale, szx, szy, ox, oy, px, py, x, y);
-      px = x, py = y;
+  if(numflags){
+    for(j = 0; j < numepoc; ++j){
+      int pflg, px, py, k = j ? epoc[j - 1] + 1 : 0;
+      for(i = k; i <= epoc[j]; ++i){
+        int flg = flags[i], x = xcoords[i], y = ycoords[i];
+        if(SHOW_MARK){
+          int r = i == k ? 4 : 3;
+          COLORREF col = flg & 0x01 ? RGB(0, 0, 255) : RGB(255, 0, 0);
+          HPEN hpen = CreatePen(PS_SOLID, 1, col);
+          HPEN hopen = (HPEN)SelectObject(hdc, hpen);
+          HBRUSH hbrush, hobrush;
+          if(i == k) hbrush = CreateSolidBrush(RGB(0, 255, 0));
+          else hbrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
+          hobrush = (HBRUSH)SelectObject(hdc, hbrush);
+          Ellipse(hdc, ox - r + x / scale, szy - (oy - r + y / scale),
+            ox + r + x / scale, szy - (oy + r + y / scale));
+          SelectObject(hdc, hobrush);
+          if(i == k) DeleteObject(hbrush);
+          SelectObject(hdc, hopen);
+          DeleteObject(hpen);
+        }
+        if(i == k && !(flg & 0x01))
+          MessageBox(NULL, "off curve first", TITLE, MB_ICONEXCLAMATION|IDOK);
+        if(i != k){
+          int n = i == epoc[j] ? k : i + 1;
+          int nflg = flags[n], nx = xcoords[n], ny = ycoords[n];
+          if(curve(hdc, scale, szx, szy, ox, oy,
+            &pflg, &px, &py, flg, x, y, nflg, nx, ny)) continue;
+        }
+        pflg = flg, px = x, py = y;
+      }
+      curve(hdc, scale, szx, szy, ox, oy, &pflg, &px, &py,
+        flags[k], xcoords[k], ycoords[k],
+        flags[k + 1], xcoords[k + 1], ycoords[k + 1]);
     }
-    stroke(hdc, scale, szx, szy, ox, oy, px, py, xcoords[k], ycoords[k]);
   }
   if(epoc) free(epoc);
   if(flags) free(flags);
   if(xcoords) free(xcoords);
   if(ycoords) free(ycoords);
   return 0;
+}
+
+int bezier(HDC hdc, int scale, int szx, int szy, int ox, int oy,
+  int px, int py, int x, int y, int nx, int ny)
+{
+  int t, m = ((nx - px) * (nx - px) + (ny - py) * (ny - py)) / 5000;
+  MoveToEx(hdc, ox + px / scale, szy - (oy + py / scale), NULL);
+  for(t = 1; t < m; ++t){
+    float f = t / (float)m;
+    float a[] = {(1 - f) * (1 - f), 2 * f * (1 - f), f * f};
+    int tx = a[0] * px + a[1] * x + a[2] * nx;
+    int ty = a[0] * py + a[1] * y + a[2] * ny;
+    LineTo(hdc, ox + tx / scale, szy - (oy + ty / scale));
+  }
+  LineTo(hdc, ox + nx / scale, szy - (oy + ny / scale));
+  return 0;
+}
+
+int curve(HDC hdc, int scale, int szx, int szy, int ox, int oy,
+  int *pflg, int *px, int *py, int flg, int x, int y, int nflg, int nx, int ny)
+{
+  if(flg & 0x01){
+    if(!(*pflg & 0x01))
+      MessageBox(NULL, "off curve bug", TITLE, MB_ICONEXCLAMATION|IDOK);
+    stroke(hdc, scale, szx, szy, ox, oy, *px, *py, x, y);
+    return 0;
+  }
+  if(nflg & 0x01){
+    bezier(hdc, scale, szx, szy, ox, oy, *px, *py, x, y, nx, ny);
+    *pflg = nflg, *px = nx, *py = ny;
+    return !0;
+  }else{
+    int mx = (x + nx) / 2, my = (y + ny) / 2;
+    bezier(hdc, scale, szx, szy, ox, oy, *px, *py, x, y, mx, my);
+    *pflg = 1, *px = mx, *py = my;
+    return !0;
+  }
 }
 
 int stroke(HDC hdc, int scale, int szx, int szy, int ox, int oy,
