@@ -1,5 +1,5 @@
 /*
-  cl user32.lib gdi32.lib test_draw_glyph.c
+  cl user32.lib gdi32.lib advapi32.lib test_draw_glyph.c
 */
 
 #include <windows.h>
