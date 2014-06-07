@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define SHOW_MARK 1
+#define SHOW_MARK 0
 
 char *TITLE = "glyf";
 BYTE *gflg = "AQv/8AIYH8k5JMkBA/ACCxeSSSQBA/ABDP/4ARLJ+SACEyDkknySAAIDB/8=";
@@ -34,6 +34,7 @@ typedef struct _CurvePoint {
 typedef struct _DrawInfo {
   HDC hdc;
   int szx, szy, ox, oy, spx, spy, scale;
+  int state;
 } DrawInfo;
 
 int scalex(DrawInfo *di, int x)
@@ -129,6 +130,7 @@ int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
       int k = j ? epoc[j - 1] + 1 : 0;
       for(i = k; i <= epoc[j]; ++i){
         CurvePoint cur = cp[i];
+        di->state = i - k;
         if(SHOW_MARK){
           int r = i == k ? 4 : 3;
           COLORREF col = cur.flg & 0x01 ? RGB(0, 0, 255) : RGB(255, 0, 0);
@@ -151,6 +153,7 @@ int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
           if(curve(di, &prv, &cur, &cp[i == epoc[j] ? k : i + 1])) continue;
         prv = cur;
       }
+      di->state = i - k;
       curve(di, &prv, &cp[k], &cp[k + 1]);
     }
   }
@@ -161,9 +164,10 @@ int drawGlyph(DrawInfo *di, int *w, int *h, int ch)
 
 int bezier(DrawInfo *di, int px, int py, int x, int y, int nx, int ny)
 {
-#if 0
+#if 1
   int t, m = ((nx - px) * (nx - px) + (ny - py) * (ny - py)) / 5000;
-  MoveToEx(di->hdc, scalex(di, px), scaley(di, py), NULL);
+  if(di->state == 1)
+    MoveToEx(di->hdc, scalex(di, px), scaley(di, py), NULL);
   for(t = 1; t < m; ++t){
     float f = t / (float)m;
     float a[] = {(1 - f) * (1 - f), 2 * f * (1 - f), f * f};
@@ -183,7 +187,7 @@ int bezier(DrawInfo *di, int px, int py, int x, int y, int nx, int ny)
     lppt[i].x = scalex(di, lppt[i].x);
     lppt[i].y = scaley(di, lppt[i].y);
   }
-  PolyBezier(di->hdc, lppt, sizeof(lppt) / sizeof(lppt[0]));
+  PolyBezierTo(di->hdc, lppt, sizeof(lppt) / sizeof(lppt[0]));
 #endif
   return 0;
 }
@@ -210,16 +214,17 @@ int curve(DrawInfo *di, CurvePoint *prv, CurvePoint *cur, CurvePoint *nxt)
 
 int stroke(DrawInfo *di, int xs, int ys, int xe, int ye)
 {
-  POINT p;
-  MoveToEx(di->hdc, scalex(di, xs), scaley(di, ys), &p);
+  if(di->state == 1){
+    POINT p;
+    MoveToEx(di->hdc, scalex(di, xs), scaley(di, ys), &p);
+  }
   LineTo(di->hdc, scalex(di, xe), scaley(di, ye));
   return 0;
 }
 
-int drawStrokes(DrawInfo *di, char *str)
+int drawStrokes(DrawInfo *di, COLORREF foreground_color, char *str)
 {
   int ox = di->ox, oy = di->oy;
-  COLORREF foreground_color = RGB(0, 255, 0);
   HPEN hpen = CreatePen(PS_SOLID, 1, foreground_color);
   HPEN hopen = (HPEN)SelectObject(di->hdc, hpen);
   HBRUSH hbrush = CreateSolidBrush(foreground_color);
@@ -227,7 +232,11 @@ int drawStrokes(DrawInfo *di, char *str)
   char *p;
   for(p = str; *p; ++p){
     int w, h;
+    BeginPath(di->hdc);
+    SetBkMode(di->hdc, TRANSPARENT);
     drawGlyph(di, &w, &h, *p);
+    EndPath(di->hdc);
+    FillPath(di->hdc);
     if(*p == '\n') di->ox = ox, di->oy -= h + di->spy;
     else di->ox += w + di->spx;
   }
@@ -244,7 +253,7 @@ int drawCallback(HDC hdc, int szx, int szy, COLORREF transparent_color)
   HBRUSH hbrush = CreateSolidBrush(transparent_color);
   HBRUSH hobrush = (HBRUSH)SelectObject(hdc, hbrush);
   Rectangle(hdc, 0, 0, szx, szy);
-  drawStrokes(&di, "Hello,\nworld!");
+  drawStrokes(&di, RGB(0, 255, 0), "Hello,\nworld!");
   DeleteObject(SelectObject(hdc, hobrush));
   DeleteObject(SelectObject(hdc, hopen));
   return 0;
@@ -281,8 +290,36 @@ int drawTransparent(HDC hdc, int x, int y, int w, int h,
   return 0;
 }
 
+BOOL versionCheck(DWORD major, DWORD minor, DWORD spmajor)
+{
+  OSVERSIONINFO osvi;
+  ZeroMemory(&osvi, sizeof(OSVERSIONINFO));
+  osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+  GetVersionEx(&osvi);
+  if(osvi.dwMajorVersion > major) return TRUE;
+  if(osvi.dwMajorVersion < major) return FALSE;
+  if(osvi.dwMinorVersion > minor) return TRUE;
+  if(osvi.dwMinorVersion < minor) return FALSE;
+  if(spmajor && osvi.dwPlatformId == VER_PLATFORM_WIN32_NT){
+    BOOL spCheck = FALSE;
+    HKEY hkey;
+    if(RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+      "SYSTEM\\CurrentControlSet\\Control\\Windows",
+      0, KEY_QUERY_VALUE, &hkey) == ERROR_SUCCESS){
+      DWORD CSDVersion, sz = sizeof(DWORD);
+      if(RegQueryValueEx(hkey, "CSDVersion", NULL, NULL,
+        (BYTE *)&CSDVersion, &sz) == ERROR_SUCCESS)
+        spCheck = LOWORD(CSDVersion) >= spmajor;
+      RegCloseKey(hkey);
+    }
+    return spCheck;
+  }
+  return TRUE;
+}
+
 int main(int ac, char **av)
 {
+  if(!versionCheck(4, 0, 3)) fprintf(stderr, "error 0");
   if(!initGlyph(gflg)) fprintf(stderr, "error 1");
   if(!(glyf_len = initGlyph(glyf))) fprintf(stderr, "error 2");
   {
